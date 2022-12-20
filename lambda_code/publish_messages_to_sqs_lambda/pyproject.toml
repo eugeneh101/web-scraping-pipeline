@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "publish_message_to_sqs_lambda"
+name = "publish_messages_to_sqs_lambda"
 version = "0.1.0"
 description = ""
 authors = ["Eugene"]
