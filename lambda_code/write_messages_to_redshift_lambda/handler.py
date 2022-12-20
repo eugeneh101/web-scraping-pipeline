@@ -17,12 +17,12 @@ UNPROCESSED_SQS_MESSAGES_FOLDER = os.environ["UNPROCESSED_SQS_MESSAGES_FOLDER"]
 PROCESSED_SQS_MESSAGES_FOLDER = os.environ["PROCESSED_SQS_MESSAGES_FOLDER"]
 
 redshift_data_client = boto3.client("redshift-data")
-REDSHIFT_CLUSTER_NAME = os.environ["REDSHIFT_ENDPOINT_ADDRESS"].split(".")[0]
-REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
 REDSHIFT_USER = os.environ["REDSHIFT_USER"]
 REDSHIFT_DATABASE_NAME = os.environ["REDSHIFT_DATABASE_NAME"]
 REDSHIFT_SCHEMA_NAME = os.environ["REDSHIFT_SCHEMA_NAME"]
 REDSHIFT_TABLE_NAME = os.environ["REDSHIFT_TABLE_NAME"]
+REDSHIFT_CLUSTER_NAME = os.environ["REDSHIFT_ENDPOINT_ADDRESS"].split(".")[0]
+REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
 
 
 def execute_sql_statement(sql_statement: str) -> None:
@@ -72,12 +72,13 @@ def lambda_handler(event, context) -> None:
         df_messages.to_csv(in_memory_csv, sep="|", header=False, index=False)
         s3_filename = (
             f"{UNPROCESSED_SQS_MESSAGES_FOLDER}/"
-            f"{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}__{uuid.uuid4()}"
+            f"{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}__{uuid.uuid4()}__"
+            f"{len(df_messages)}_records.csv"
         )
         s3_client.put_object(
             Bucket=S3_BUCKET_FOR_REDSHIFT_STAGING,
             Key=s3_filename,
-            Body=in_memory_csv,
+            Body=in_memory_csv.getvalue(),
         )
 
     sql_statements = [
@@ -113,3 +114,4 @@ def lambda_handler(event, context) -> None:
             PROCESSED_SQS_MESSAGES_FOLDER,
         ),
     )
+    return
