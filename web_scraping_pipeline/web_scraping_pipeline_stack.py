@@ -181,6 +181,7 @@ class WebScrapingPipelineStack(Stack):
                 "REDSHIFT_TABLE_NAME": environment["REDSHIFT_TABLE_NAME"],
                 "UNPROCESSED_SQS_MESSAGES_FOLDER": environment["UNPROCESSED_SQS_MESSAGES_FOLDER"],
                 "PROCESSED_SQS_MESSAGES_FOLDER": environment["PROCESSED_SQS_MESSAGES_FOLDER"],
+                "AWSREGION": environment["AWS_REGION"],  # apparently "AWS_REGION" is not allowed as a Lambda env variable
             },
             role=self.lambda_redshift_full_access_role,
         )
@@ -190,9 +191,12 @@ class WebScrapingPipelineStack(Stack):
         self.write_messages_to_redshift_lambda.add_event_source(
             _lambda_event_sources.SqsEventSource(self.scraped_messages_queue, batch_size=1)
         )
-        self.write_messages_to_redshift_lambda.add_environment(
-            key="REDSHIFT_ENDPOINT_ADDRESS", value=self.redshift_service.redshift_cluster.attr_endpoint_address
-        )
-        self.write_messages_to_redshift_lambda.add_environment(
-            key="REDSHIFT_ROLE_ARN", value=self.redshift_service.redshift_full_commands_full_access_role.role_arn
-        )
+        lambda_environment_variables = {
+            "REDSHIFT_ENDPOINT_ADDRESS": self.redshift_service.redshift_cluster.attr_endpoint_address,
+            "REDSHIFT_ROLE_ARN": self.redshift_service.redshift_full_commands_full_access_role.role_arn,
+            "S3_BUCKET_FOR_REDSHIFT_STAGING": self.s3_bucket_for_redshift_staging.bucket_name,
+            }
+        for key, value in lambda_environment_variables.items():
+            self.write_messages_to_redshift_lambda.add_environment(
+                key=key, value=value
+            )

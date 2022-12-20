@@ -1,20 +1,24 @@
+import io
 import json
 import os
 import time
+import uuid
+from datetime import datetime
 
 import boto3
 import pandas as pd
 
-# AWS_REGION = os.environ["AWSREGION"]
+
+AWS_REGION = os.environ["AWSREGION"]  # apparently "AWS_REGION" is not allowed as a Lambda env variable
 
 s3_client = boto3.client("s3")
-# S3_BUCKET_FOR_DYNAMODB_STREAM_TO_REDSHIFT = os.environ["S3_BUCKET_FOR_DYNAMODB_STREAM_TO_REDSHIFT"]
-# UNPROCESSED_DYNAMODB_STREAM_FOLDER = os.environ["UNPROCESSED_DYNAMODB_STREAM_FOLDER"]
-# PROCESSED_DYNAMODB_STREAM_FOLDER = os.environ["PROCESSED_DYNAMODB_STREAM_FOLDER"]
+S3_BUCKET_FOR_REDSHIFT_STAGING = os.environ["S3_BUCKET_FOR_REDSHIFT_STAGING"]
+UNPROCESSED_SQS_MESSAGES_FOLDER = os.environ["UNPROCESSED_SQS_MESSAGES_FOLDER"]
+PROCESSED_SQS_MESSAGES_FOLDER = os.environ["PROCESSED_SQS_MESSAGES_FOLDER"]
 
 redshift_data_client = boto3.client("redshift-data")
 REDSHIFT_CLUSTER_NAME = os.environ["REDSHIFT_ENDPOINT_ADDRESS"].split(".")[0]
-# REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
+REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
 REDSHIFT_USER = os.environ["REDSHIFT_USER"]
 REDSHIFT_DATABASE_NAME = os.environ["REDSHIFT_DATABASE_NAME"]
 REDSHIFT_SCHEMA_NAME = os.environ["REDSHIFT_SCHEMA_NAME"]
@@ -64,7 +68,17 @@ def lambda_handler(event, context) -> None:
     assert len(records) == 1, f"SQS batch size should be 1. It is {len(records)}" ####
     messages = records[0]
     df_messages = pd.DataFrame(json.loads(messages["body"]))
-    
+    with io.BytesIO() as in_memory_csv:
+        df_messages.to_csv(in_memory_csv, sep="|", header=False, index=False)
+        s3_filename = (
+            f"{UNPROCESSED_SQS_MESSAGES_FOLDER}/"
+            f"{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}__{uuid.uuid4()}"
+        )
+        s3_client.put_object(
+            Bucket=S3_BUCKET_FOR_REDSHIFT_STAGING,
+            Key=s3_filename,
+            Body=in_memory_csv,
+        )
 
     sql_statements = [
         f"CREATE SCHEMA IF NOT EXISTS {REDSHIFT_SCHEMA_NAME};",
@@ -83,17 +97,19 @@ def lambda_handler(event, context) -> None:
 
     sql_statement = f"""
         COPY {REDSHIFT_DATABASE_NAME}.{REDSHIFT_SCHEMA_NAME}.{REDSHIFT_TABLE_NAME}
-        FROM 's3://{S3_BUCKET_FOR_DYNAMODB_STREAM_TO_REDSHIFT}/{s3_file}'
+        FROM 's3://{S3_BUCKET_FOR_REDSHIFT_STAGING}/{s3_filename}'
         REGION '{AWS_REGION}'
-        iam_role '{REDSHIFT_ROLE_ARN}'
-        format as json 'auto';
+        IAM_ROLE '{REDSHIFT_ROLE_ARN}'
+        FORMAT AS CSV
+        DELIMITER '|'
+        QUOTE '"';
     """
     execute_sql_statement(sql_statement=sql_statement)
     move_s3_file(
-        s3_bucket=S3_BUCKET_FOR_DYNAMODB_STREAM_TO_REDSHIFT,
-        old_s3_filename=s3_file,
-        new_s3_filename=s3_file.replace(
-            UNPROCESSED_MESSAGE_FOLDER,
-            PROCESSED_DYNAMODB_STREAM_FOLDER,
+        s3_bucket=S3_BUCKET_FOR_REDSHIFT_STAGING,
+        old_s3_filename=s3_filename,
+        new_s3_filename=s3_filename.replace(
+            UNPROCESSED_SQS_MESSAGES_FOLDER,
+            PROCESSED_SQS_MESSAGES_FOLDER,
         ),
     )
