@@ -12,7 +12,6 @@ The architecture diagram looks quick intense. The core idea is quite simple: the
 * For observability, you can inspect the Lambda's Cloudwatch logs: runtime duration, failures, and count of endpoint hits. If you are fancy, you can add metrics & alarms to the Lambda (and API Gateway). For the business/operations/SRE team, you can add New Relic to the Lambda such that there will be "single pane of glass" for 24/7 monitoring. You can also inspect the API Gateway's dashboard.
 
 
-
 ## Miscellaneous details:
 * `cdk.json` is basically the config file. I specified to deploy this microservice to us-east-1 (Virginia). You can change this to your region of choice.
 * The following is the AWS resources deployed by CDK and thus Cloudformation. A summary would be: <p align="center"><img src="AWS_resources.jpg" width="500"></p>
@@ -24,6 +23,15 @@ The architecture diagram looks quick intense. The core idea is quite simple: the
     * other miscellaneous AWS resources such as IAM permissions
 * As always, IAM permissions and VPC security groups are the trickiest parts.
 * In production, I would have a DLQ for the SQS queue such that failed messages are not reprocessed forever. Also I would add monitoring metrics everywhere to inform me when something breaks.
+
+
+# Learnings
+There were certain challenges with the data. For example, the `reply_message_id` column is supposed to be an integer but my Redshift table defined it as a float. The reason is that pandas saw NULLs in that column and thus cast it to float. Also `message_timestamp` and `processing_time` are timestamps, but I defined the table columns as VARCHAR for expendiency's sake. `message_content` had a large spread on the length of the message. There were many "messages" that had 0 length. The largest message had over 4,000 characters, so I arbitrarily defined the table column to be VARCHAR(5000). In the case of a message larger than that, my Lambda would fail to run. A simple fix is to truncate the message to 5000 characters. Another possibility is to wait and see for the failures. The failed message would eventually be moved from the main queue to the DLQ, so you can inspect it.
+Since storage is cheap, you can consider retaining all the web scraped data and save it to files in S3 Glacier or S3 Intelligent tiering rather than deleting the data. 1 GB costs about 1 cent per month on S3 Infrequent access, so 100 GB is $1/month. 1 Terabyte is $10/month.
+
+Given more time, I would have opted to go full serverless. The only "server-ful" component of my architecture is the Redshift cluster. However Redshift also offers the serverless variant. Hence this architecture can be modified to be entirely serverless, pay-as-you-go instead of pay-for-being-turned on.
+
+To integrate with a full ML learning system, I would give the quant/data scientist an AWS Sagemaker notebook instance where he can pull data from Redshift and run ad hoc queries and test hypotheses. If he is building ML models, then he can deploy to Sagemaker endpoint he can due rapid real-time inferences or bulk, batch inferencing. This is architecture implements the OLAP database. If you also want the OLTP database (such as RDS/DynamoDB/insert_your_favorite_database), then I would have my web scraper publish to a SNS topic and fan out by having multiple subscribers. Then each subscriber can parallelize ingest data to its respective database.
 
 
 # Deploying the Microservice Yourself
