@@ -65,9 +65,11 @@ def move_s3_file(s3_bucket: str, old_s3_filename: str, new_s3_filename) -> None:
 
 def lambda_handler(event, context) -> None:
     records = event["Records"]
-    assert len(records) == 1, f"SQS batch size should be 1. It is {len(records)}" ####
-    messages = records[0]
-    df_messages = pd.DataFrame(json.loads(messages["body"]))
+    assert len(records) == 1, f"SQS batch size should be 1. It is {len(records)}"
+    record = records[0]
+    body = json.loads(record["body"])
+    scraped_messages = json.loads(body["Message"])
+    df_messages = pd.DataFrame(scraped_messages)
     with io.BytesIO() as in_memory_csv:
         df_messages.to_csv(in_memory_csv, sep="|", header=False, index=False)
         s3_filename = (
