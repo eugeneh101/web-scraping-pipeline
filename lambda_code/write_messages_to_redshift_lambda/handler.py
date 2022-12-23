@@ -8,9 +8,8 @@ from datetime import datetime
 import boto3
 import pandas as pd
 
-
-AWS_REGION = os.environ["AWSREGION"]  # apparently "AWS_REGION" is not allowed as a Lambda env variable
-
+# apparently "AWS_REGION" is not allowed as a Lambda env variable
+AWS_REGION = os.environ["AWSREGION"]
 s3_client = boto3.client("s3")
 S3_BUCKET_FOR_REDSHIFT_STAGING = os.environ["S3_BUCKET_FOR_REDSHIFT_STAGING"]
 UNPROCESSED_SQS_MESSAGES_FOLDER = os.environ["UNPROCESSED_SQS_MESSAGES_FOLDER"]
@@ -48,7 +47,8 @@ def execute_sql_statement(sql_statement: str) -> None:
             print(response)
             raise  ### figure out useful message in exception
 
-def move_s3_file(s3_bucket: str, old_s3_filename: str, new_s3_filename) -> None:
+
+def move_s3_file(s3_bucket: str, old_s3_filename: str, new_s3_filename: str) -> None:
     s3_client.copy_object(
         Bucket=s3_bucket,
         Key=new_s3_filename,
@@ -62,6 +62,7 @@ def move_s3_file(s3_bucket: str, old_s3_filename: str, new_s3_filename) -> None:
         f"Moved s3://{s3_bucket}/{old_s3_filename} to "
         f"s3://{s3_bucket}/{new_s3_filename}"
     )
+
 
 def lambda_handler(event, context) -> None:
     records = event["Records"]
@@ -93,7 +94,7 @@ def lambda_handler(event, context) -> None:
             trader_id varchar(30),
             chat_link int8,
             processing_time varchar(30)
-        );""",   # `reply_message_id` column is really an integer but pandas has float due to NULL
+        );""",  # `reply_message_id` column is really an integer but pandas has float due to NULL
     ]
     for sql_statement in sql_statements:
         execute_sql_statement(sql_statement=sql_statement)

@@ -16,6 +16,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+
 class PublishWebScrapedMessagesService(Construct):
     def __init__(
         self,
@@ -90,7 +91,9 @@ class WriteMessagesToRedshiftService(Construct):
             "ScrapedMessagesQueue",
             removal_policy=RemovalPolicy.DESTROY,
             retention_period=Duration.days(4),
-            visibility_timeout=Duration.seconds(30),  # retry failed message within same minute
+            visibility_timeout=Duration.seconds(
+                30
+            ),  # retry failed message within same minute
         )
         self.s3_bucket_for_redshift_staging = s3.Bucket(
             self,
@@ -129,7 +132,6 @@ class WriteMessagesToRedshiftService(Construct):
             # cluster_subnet_group_name=demo_cluster_subnet_group.ref,
             # vpc_security_group_ids=[security_group.security_group_id],
         )
-
 
         # stateless resources
         self.lambda_redshift_full_access_role = iam.Role(
@@ -170,9 +172,15 @@ class WriteMessagesToRedshiftService(Construct):
             timeout=Duration.seconds(20),  # can take awhile
             memory_size=1024,  # in MB
             environment={
-                "AWSREGION": environment["AWS_REGION"],  # apparently "AWS_REGION" is not allowed as a Lambda env variable
-                "UNPROCESSED_SQS_MESSAGES_FOLDER": environment["UNPROCESSED_SQS_MESSAGES_FOLDER"],
-                "PROCESSED_SQS_MESSAGES_FOLDER": environment["PROCESSED_SQS_MESSAGES_FOLDER"],
+                "AWSREGION": environment[
+                    "AWS_REGION"
+                ],  # apparently "AWS_REGION" is not allowed as a Lambda env variable
+                "UNPROCESSED_SQS_MESSAGES_FOLDER": environment[
+                    "UNPROCESSED_SQS_MESSAGES_FOLDER"
+                ],
+                "PROCESSED_SQS_MESSAGES_FOLDER": environment[
+                    "PROCESSED_SQS_MESSAGES_FOLDER"
+                ],
                 "REDSHIFT_USER": environment["REDSHIFT_USER"],
                 "REDSHIFT_DATABASE_NAME": environment["REDSHIFT_DATABASE_NAME"],
                 "REDSHIFT_SCHEMA_NAME": environment["REDSHIFT_SCHEMA_NAME"],
@@ -183,18 +191,20 @@ class WriteMessagesToRedshiftService(Construct):
 
         # connect AWS resources
         self.write_messages_to_redshift_lambda.add_event_source(
-            _lambda_event_sources.SqsEventSource(self.scraped_messages_queue_for_redshift, batch_size=1)
+            _lambda_event_sources.SqsEventSource(
+                self.scraped_messages_queue_for_redshift, batch_size=1
+            )
         )
-        self.s3_bucket_for_redshift_staging.grant_read_write(self.write_messages_to_redshift_lambda)
+        self.s3_bucket_for_redshift_staging.grant_read_write(
+            self.write_messages_to_redshift_lambda
+        )
         lambda_environment_variables = {
             "REDSHIFT_ENDPOINT_ADDRESS": self.redshift_cluster.attr_endpoint_address,
             "REDSHIFT_ROLE_ARN": self.redshift_full_commands_full_access_role.role_arn,
             "S3_BUCKET_FOR_REDSHIFT_STAGING": self.s3_bucket_for_redshift_staging.bucket_name,
-            }
+        }
         for key, value in lambda_environment_variables.items():
-            self.write_messages_to_redshift_lambda.add_environment(
-                key=key, value=value
-            )
+            self.write_messages_to_redshift_lambda.add_environment(key=key, value=value)
 
 
 class WebScrapingPipelineStack(Stack):
@@ -220,4 +230,6 @@ class WebScrapingPipelineStack(Stack):
                 self.write_messages_to_redshift_service.scraped_messages_queue_for_redshift
             )
         )
-        self.publish_web_scraped_messages_service.scheduled_eventbridge_event.node.add_dependency(self.write_messages_to_redshift_service.write_messages_to_redshift_lambda)  # make sure that Lambda is created before Eventbridge rule to prevent race condition
+        self.publish_web_scraped_messages_service.scheduled_eventbridge_event.node.add_dependency(
+            self.write_messages_to_redshift_service.write_messages_to_redshift_lambda
+        )  # make sure that Lambda is created before Eventbridge rule to prevent race condition
