@@ -10,9 +10,69 @@ from aws_cdk import (
     aws_lambda_event_sources as _lambda_event_sources,
     aws_redshift as redshift,
     aws_s3 as s3,
+    aws_sns as sns,
+    aws_sns_subscriptions as sns_subscriptions,
     aws_sqs as sqs,
 )
 from constructs import Construct
+
+class PublishWebScrapedMessagesService(Construct):
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        environment: dict,
+    ) -> None:
+        super().__init__(scope, construct_id)  # required
+
+        # stateful resources
+        self.scheduled_eventbridge_event = events.Rule(
+            self,
+            "RunEveryMinute",
+            event_bus=None,  # scheduled events must be on "default" bus
+            schedule=events.Schedule.rate(Duration.minutes(1)),
+        )
+        self.scraped_messages_topic = sns.Topic(self, "ScapedMessagesTopic")
+
+        # stateless resources
+        self.publish_messages_to_sns_lambda = _lambda.Function(
+            self,
+            "PublishMessagesToSNSLambda",
+            runtime=_lambda.Runtime.PYTHON_3_9,
+            code=_lambda.Code.from_asset(
+                "lambda_code/publish_messages_to_sns_lambda",
+                # exclude=[".venv/*"],  # seems to no longer do anything if use BundlingOptions
+                bundling=BundlingOptions(
+                    image=_lambda.Runtime.PYTHON_3_9.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        " && ".join(
+                            [
+                                "cp handler.py data-engineering-bezant-assignement-dataset.zip /asset-output",  # need to cp instead of mv
+                                "pip install -r requirements.txt -t /asset-output",
+                            ]
+                        ),
+                    ],
+                ),
+            ),
+            handler="handler.lambda_handler",
+            timeout=Duration.seconds(1),  # should be fairly quick
+            memory_size=1024,  # in MB
+        )
+
+        # connect AWS resources
+        self.scheduled_eventbridge_event.add_target(
+            target=events_targets.LambdaFunction(
+                handler=self.publish_messages_to_sns_lambda,
+                retry_attempts=3,
+                ### then put in DLQ
+            ),
+        )
+        self.scraped_messages_topic.grant_publish(self.publish_messages_to_sns_lambda)
+        self.publish_messages_to_sns_lambda.add_environment(
+            key="TOPIC_ARN", value=self.scraped_messages_topic.topic_arn
+        )
 
 
 class RedshiftService(Construct):
@@ -60,15 +120,12 @@ class WebScrapingPipelineStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # Publish Message Stack
-        # stateful resources
-        self.scheduled_eventbridge_event = events.Rule(
-            self,
-            "RunEveryMinute",
-            event_bus=None,  # scheduled events must be on "default" bus
-            schedule=events.Schedule.rate(Duration.minutes(1)),
+        self.publish_web_scraped_messages_service = PublishWebScrapedMessagesService(
+            self, "PublishWebScrapedMessagesService", environment=environment
         )
-        self.scraped_messages_queue = sqs.Queue(
+
+        # Store Message Stack
+        self.scraped_messages_queue_for_redshift = sqs.Queue(
             self,
             "ScrapedMessagesQueue",
             removal_policy=RemovalPolicy.DESTROY,
@@ -76,48 +133,6 @@ class WebScrapingPipelineStack(Stack):
             visibility_timeout=Duration.seconds(10),  # retry failed message quickly
         )
 
-        # stateless resources
-        self.publish_messages_to_sqs_lambda = _lambda.Function(
-            self,
-            "PublishMessagesToSQSLambda",
-            runtime=_lambda.Runtime.PYTHON_3_9,
-            code=_lambda.Code.from_asset(
-                "lambda_code/publish_messages_to_sqs_lambda",
-                # exclude=[".venv/*"],  # seems to no longer do anything if use BundlingOptions
-                bundling=BundlingOptions(
-                    image=_lambda.Runtime.PYTHON_3_9.bundling_image,
-                    command=[
-                        "bash",
-                        "-c",
-                        " && ".join(
-                            [
-                                "pip install -r requirements.txt -t /asset-output",
-                                "cp handler.py data-engineering-bezant-assignement-dataset.zip /asset-output",  # need to cp instead of mv
-                            ]
-                        ),
-                    ],
-                ),
-            ),
-            handler="handler.lambda_handler",
-            timeout=Duration.seconds(1),  # should be fairly quick
-            memory_size=1024,  # in MB
-        )
-
-        # connect AWS resources
-        self.scheduled_eventbridge_event.add_target(
-            target=events_targets.LambdaFunction(
-                handler=self.publish_messages_to_sqs_lambda,
-                retry_attempts=3,
-                ### then put in DLQ
-            ),
-        )
-        self.scraped_messages_queue.grant_send_messages(self.publish_messages_to_sqs_lambda)
-        self.publish_messages_to_sqs_lambda.add_environment(
-            key="QUEUE_NAME", value=self.scraped_messages_queue.queue_name
-        )
-
-
-        # Store Message Stack
         self.redshift_service = RedshiftService(
             self, "RedshiftService", environment=environment
         # security_group: ec2.SecurityGroup,
@@ -164,8 +179,8 @@ class WebScrapingPipelineStack(Stack):
                         "-c",
                         " && ".join(
                             [
-                                "pip install -r requirements.txt -t /asset-output",
                                 "cp handler.py /asset-output",  # need to cp instead of mv
+                                "pip install -r requirements.txt -t /asset-output",
                             ]
                         ),
                     ],
@@ -187,9 +202,13 @@ class WebScrapingPipelineStack(Stack):
         )
 
 
-        # # connect AWS resources
+        # connect AWS resources
+        self.publish_web_scraped_messages_service.scraped_messages_topic.add_subscription(
+            sns_subscriptions.SqsSubscription(self.scraped_messages_queue_for_redshift)
+        )
+
         self.write_messages_to_redshift_lambda.add_event_source(
-            _lambda_event_sources.SqsEventSource(self.scraped_messages_queue, batch_size=1)
+            _lambda_event_sources.SqsEventSource(self.scraped_messages_queue_for_redshift, batch_size=1)
         )
         self.s3_bucket_for_redshift_staging.grant_read_write(self.write_messages_to_redshift_lambda)
         lambda_environment_variables = {
@@ -201,4 +220,4 @@ class WebScrapingPipelineStack(Stack):
             self.write_messages_to_redshift_lambda.add_environment(
                 key=key, value=value
             )
-        self.scheduled_eventbridge_event.node.add_dependency(self.write_messages_to_redshift_lambda)  # make sure that Lambda is created before Eventbridge rule to prevent race condition
+        self.publish_web_scraped_messages_service.scheduled_eventbridge_event.node.add_dependency(self.write_messages_to_redshift_lambda)  # make sure that Lambda is created before Eventbridge rule to prevent race condition
