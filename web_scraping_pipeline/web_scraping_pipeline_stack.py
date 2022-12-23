@@ -75,15 +75,37 @@ class PublishWebScrapedMessagesService(Construct):
         )
 
 
-class RedshiftService(Construct):
+class WriteMessagesToRedshiftService(Construct):
     def __init__(
         self,
         scope: Construct,
         construct_id: str,
         environment: dict,
-        # security_group: ec2.SecurityGroup,
     ) -> None:
         super().__init__(scope, construct_id)  # required
+
+        # stateful resources
+        self.scraped_messages_queue_for_redshift = sqs.Queue(
+            self,
+            "ScrapedMessagesQueue",
+            removal_policy=RemovalPolicy.DESTROY,
+            retention_period=Duration.days(4),
+            visibility_timeout=Duration.seconds(30),  # retry failed message within same minute
+        )
+        self.s3_bucket_for_redshift_staging = s3.Bucket(
+            self,
+            "S3BucketForRedshiftStaging",
+            removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
+            versioned=False,  # if versioning disabled, then expired files are deleted
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="expire_files_with_certain_prefix_after_1_day",
+                    expiration=Duration.days(1),
+                    prefix=f"{environment['PROCESSED_SQS_MESSAGES_FOLDER']}/",
+                ),
+            ],
+        )
         self.redshift_full_commands_full_access_role = iam.Role(
             self,
             "RedshiftClusterRole",
@@ -109,49 +131,7 @@ class RedshiftService(Construct):
         )
 
 
-class WebScrapingPipelineStack(Stack):
-
-    def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        environment: dict,
-        **kwargs,
-    ) -> None:
-        super().__init__(scope, construct_id, **kwargs)
-
-        self.publish_web_scraped_messages_service = PublishWebScrapedMessagesService(
-            self, "PublishWebScrapedMessagesService", environment=environment
-        )
-
-        # Store Message Stack
-        self.scraped_messages_queue_for_redshift = sqs.Queue(
-            self,
-            "ScrapedMessagesQueue",
-            removal_policy=RemovalPolicy.DESTROY,
-            retention_period=Duration.days(4),
-            visibility_timeout=Duration.seconds(10),  # retry failed message quickly
-        )
-
-        self.redshift_service = RedshiftService(
-            self, "RedshiftService", environment=environment
-        # security_group: ec2.SecurityGroup,
-        )
-        self.s3_bucket_for_redshift_staging = s3.Bucket(
-            self,
-            "S3BucketForRedshiftStaging",
-            removal_policy=RemovalPolicy.DESTROY,
-            auto_delete_objects=True,
-            versioned=False,  # if versioning disabled, then expired files are deleted
-            lifecycle_rules=[
-                s3.LifecycleRule(
-                    id="expire_files_with_certain_prefix_after_1_day",
-                    expiration=Duration.days(1),
-                    prefix=f"{environment['PROCESSED_SQS_MESSAGES_FOLDER']}/",
-                ),
-            ],
-        )
-
+        # stateless resources
         self.lambda_redshift_full_access_role = iam.Role(
             self,
             "LambdaRedshiftFullAccessRole",
@@ -187,7 +167,7 @@ class WebScrapingPipelineStack(Stack):
                 ),
             ),
             handler="handler.lambda_handler",
-            timeout=Duration.seconds(10),  # can take awhile
+            timeout=Duration.seconds(20),  # can take awhile
             memory_size=1024,  # in MB
             environment={
                 "AWSREGION": environment["AWS_REGION"],  # apparently "AWS_REGION" is not allowed as a Lambda env variable
@@ -201,23 +181,43 @@ class WebScrapingPipelineStack(Stack):
             role=self.lambda_redshift_full_access_role,
         )
 
-
         # connect AWS resources
-        self.publish_web_scraped_messages_service.scraped_messages_topic.add_subscription(
-            sns_subscriptions.SqsSubscription(self.scraped_messages_queue_for_redshift)
-        )
-
         self.write_messages_to_redshift_lambda.add_event_source(
             _lambda_event_sources.SqsEventSource(self.scraped_messages_queue_for_redshift, batch_size=1)
         )
         self.s3_bucket_for_redshift_staging.grant_read_write(self.write_messages_to_redshift_lambda)
         lambda_environment_variables = {
-            "REDSHIFT_ENDPOINT_ADDRESS": self.redshift_service.redshift_cluster.attr_endpoint_address,
-            "REDSHIFT_ROLE_ARN": self.redshift_service.redshift_full_commands_full_access_role.role_arn,
+            "REDSHIFT_ENDPOINT_ADDRESS": self.redshift_cluster.attr_endpoint_address,
+            "REDSHIFT_ROLE_ARN": self.redshift_full_commands_full_access_role.role_arn,
             "S3_BUCKET_FOR_REDSHIFT_STAGING": self.s3_bucket_for_redshift_staging.bucket_name,
             }
         for key, value in lambda_environment_variables.items():
             self.write_messages_to_redshift_lambda.add_environment(
                 key=key, value=value
             )
-        self.publish_web_scraped_messages_service.scheduled_eventbridge_event.node.add_dependency(self.write_messages_to_redshift_lambda)  # make sure that Lambda is created before Eventbridge rule to prevent race condition
+
+
+class WebScrapingPipelineStack(Stack):
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        environment: dict,
+        **kwargs,
+    ) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+
+        self.publish_web_scraped_messages_service = PublishWebScrapedMessagesService(
+            self, "PublishWebScrapedMessagesService", environment=environment
+        )
+        self.write_messages_to_redshift_service = WriteMessagesToRedshiftService(
+            self, "WriteMessagesToRedshiftService", environment=environment
+        )
+
+        # connect AWS resources
+        self.publish_web_scraped_messages_service.scraped_messages_topic.add_subscription(
+            sns_subscriptions.SqsSubscription(
+                self.write_messages_to_redshift_service.scraped_messages_queue_for_redshift
+            )
+        )
+        self.publish_web_scraped_messages_service.scheduled_eventbridge_event.node.add_dependency(self.write_messages_to_redshift_service.write_messages_to_redshift_lambda)  # make sure that Lambda is created before Eventbridge rule to prevent race condition
