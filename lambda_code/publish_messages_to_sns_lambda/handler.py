@@ -7,7 +7,7 @@ import boto3
 import pandas as pd
 
 
-queue = boto3.resource("sqs").get_queue_by_name(QueueName=os.environ["QUEUE_NAME"])
+sns_topic = boto3.resource("sns").Topic(arn=os.environ["TOPIC_ARN"])
 with open("data-engineering-bezant-assignement-dataset.zip", "rb") as f:  # hard coded file
     with zipfile.ZipFile(f, "r") as zf:
         in_memory_csv_file = io.BytesIO(zf.read("telegram.csv"))  # hard coded file
@@ -19,5 +19,5 @@ def lambda_handler(event, context) -> None:
         df_sample = df_messages.sample(random.randint(1, 1000)).reset_index(drop=True)  # hard coded between 1 and 1000 messages
         if len(df_sample.to_json()) < 256_000:  # max SQS message is 256 KB
             break
-    queue.send_message(MessageBody=df_sample.to_json())
+    sns_topic.publish(Message=df_sample.to_json(), Subject="scraped message")
     return
