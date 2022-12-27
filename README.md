@@ -9,7 +9,7 @@ The architecture diagram looks quick intense. The core idea is quite simple: the
 
 * Every 1 minute, Eventbridge triggers a Lambda to load `telegram.csv` from `data-engineering-bezant-assignement-dataset.zip` in pandas DataFrame, randomly select between 1 to 1000 rows, and publish that data to a SQS queue. The purpose is to emulate the result of the web scraping process.
 * The SQS queue triggers a Lambda that writes that data to a S3 bucket, calls the Redshift API via `boto3` such that Redshift loads that S3 file to a table, and then the Lambda renames that S3 file where the bucket policy will expire and delete that file after 1 day. The retention of the S3 file (instead of immediate deletion) is for debugging if something anomalous happens, you can look into the S3 file and cross reference if that data was successfully loaded in to Redshift.
-* For observability, you can inspect the Lambda's Cloudwatch logs: runtime duration, failures, and count of endpoint hits. If you are fancy, you can add metrics & alarms to the Lambda (and API Gateway). For the business/operations/SRE team, you can add New Relic to the Lambda such that there will be "single pane of glass" for 24/7 monitoring. You can also inspect the API Gateway's dashboard.
+* For observability, you can inspect the Lambda's Cloudwatch logs: runtime duration, failures, etc. If you are fancy, you can add metrics & alarms to the Lambda. For the business/operations/SRE team, you can add New Relic to the Lambda such that there will be "single pane of glass" for 24/7 monitoring.
 
 
 ## Miscellaneous details:
